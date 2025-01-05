@@ -184,7 +184,7 @@ PROGRESS_BAR = Rect(
     25,
 )
 
-LOG_AREA = Rect(
+DRAG_AND_DROP_AREA = Rect(
     H_GAP,
     GPU_LABEL.y + GPU_LABEL.h + V_GAP,
     WINDOW.w - (H_GAP * 2),

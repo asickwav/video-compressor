@@ -1,7 +1,6 @@
 import json
 import sys
 import os
-import os
 import psutil
 import src.globals as g
 from notifypy import Notify
@@ -15,9 +14,10 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QCheckBox,
-    QProgressBar,
+    QProgressBar
 )
-from PyQt6.QtGui import QIcon
+from PyQt6.QtGui import QIcon, QDragEnterEvent, QDropEvent
+from PyQt6.QtCore import Qt
 from src.styles import *
 
 
@@ -73,11 +73,11 @@ class Window(QWidget):
         self.button_compress.clicked.connect(self.compress_videos)
         self.button_compress.setEnabled(False)
 
-        # Abort Button
-        self.button_abort = QPushButton("Abort", self)
+        # Abort and Clear Button
+        self.button_abort = QPushButton("Clear", self)
         self.button_abort.resize(ABORT_BUTTON.w, ABORT_BUTTON.h)
         self.button_abort.move(ABORT_BUTTON.x, ABORT_BUTTON.y)
-        self.button_abort.clicked.connect(self.abort_compression)
+        self.button_abort.clicked.connect(self.abort_or_clear)
         self.button_abort.setEnabled(False)
 
         # File Size Label
@@ -102,12 +102,16 @@ class Window(QWidget):
         self.checkbox_gpu.move(GPU_CHECKBOX.x, GPU_CHECKBOX.y)
         self.checkbox_gpu.setChecked(self.settings["use_gpu"])
 
-        # Log Label
-        self.label_log = QLabel(g.READY_TEXT, self)
-        self.label_log.setEnabled(True)
-        self.label_log.resize(LOG_AREA.w, LOG_AREA.h)
-        self.label_log.move(LOG_AREA.x, LOG_AREA.y)
-        self.label_log.setWordWrap(True)
+        # Drag and Drop Area
+        self.drag_drop_area = QLabel(g.READY_TEXT, self)
+        self.drag_drop_area.setEnabled(True)
+        self.drag_drop_area.resize(DRAG_AND_DROP_AREA.w, DRAG_AND_DROP_AREA.h)
+        self.drag_drop_area.move(DRAG_AND_DROP_AREA.x, DRAG_AND_DROP_AREA.y)
+        self.drag_drop_area.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.drag_drop_area.setStyleSheet(LABEL_LOG_STYLE)
+        self.drag_drop_area.setAcceptDrops(True)
+        self.drag_drop_area.dragEnterEvent = self.drag_enter_event
+        self.drag_drop_area.dropEvent = self.drop_event
 
         # Progress Bar
         self.progress_bar = QProgressBar(self)
@@ -125,10 +129,30 @@ class Window(QWidget):
         self.edit_size.setStyleSheet(LINEEDIT_STYLE)
         self.label_gpu.setStyleSheet(LABEL_STYLE)
         self.checkbox_gpu.setStyleSheet(CHECKBOX_STYLE)
-        self.label_log.setStyleSheet(LABEL_LOG_STYLE)
         self.progress_bar.setStyleSheet(PROGRESS_BAR_STYLE)
 
         self.verify_ffmpeg()
+
+    def filter_dragged_files(self, mime_data):
+        files = [url.toLocalFile() for url in mime_data.urls()]
+        video_files = [file for file in files if file.lower().endswith(("mp4", "avi", "mkv", "mov", "wmv", "flv", "webm", "m4v"))]
+        return video_files
+
+    def drag_enter_event(self, event: QDragEnterEvent):
+        mime_data = event.mimeData()
+        if mime_data.hasUrls() and len(self.filter_dragged_files(mime_data)) > 0:
+            event.acceptProposedAction()
+
+    def drop_event(self, event: QDropEvent):
+        files = self.filter_dragged_files(event.mimeData())
+        for file in files:
+            g.queue.append(file)
+        self.button_compress.setEnabled(True)
+        self.button_compress.setStyleSheet(BUTTON_COMPRESS_STYLE)
+        self.button_abort.setEnabled(True)
+        self.button_abort.setStyleSheet(BUTTON_ABORT_STYLE)
+        print(f"Selected: {g.queue}")
+        self.update_log(f"{g.READY_TEXT}\nSelected {len(g.queue)} video(s).")
 
     def closeEvent(self, event):
         # Save settings when closing
@@ -151,8 +175,10 @@ class Window(QWidget):
         self.button_compress.setEnabled(False)
         self.button_compress.setStyleSheet(BUTTON_DISABLED_STYLE)
         self.button_abort.setEnabled(False)
+        self.button_abort.setText("Clear")
         self.button_abort.setStyleSheet(BUTTON_DISABLED_STYLE)
         self.edit_size.setEnabled(True)
+        self.drag_drop_area.setAcceptDrops(True)
         self.update_log(g.READY_TEXT)
         self.update_progress(0)
 
@@ -217,8 +243,10 @@ class Window(QWidget):
 
             self.button_compress.setEnabled(True)
             self.button_compress.setStyleSheet(BUTTON_COMPRESS_STYLE)
+            self.button_abort.setEnabled(True)
+            self.button_abort.setStyleSheet(BUTTON_ABORT_STYLE)
             print(f"Selected: {g.queue}")
-            msg = f"Selected {len(g.queue)} video(s)."
+            msg = f"{g.READY_TEXT}\nSelected {len(g.queue)} video(s)."
             self.update_log(msg)
 
     def compress_videos(self):
@@ -226,10 +254,12 @@ class Window(QWidget):
         self.button_select.setStyleSheet(BUTTON_DISABLED_STYLE)
         self.button_compress.setStyleSheet(BUTTON_DISABLED_STYLE)
         self.button_abort.setEnabled(True)
+        self.button_abort.setText("Abort")
         self.button_abort.setStyleSheet(BUTTON_ABORT_STYLE)
         self.button_select.setEnabled(False)
         self.button_compress.setEnabled(False)
         self.edit_size.setEnabled(False)
+        self.drag_drop_area.setAcceptDrops(False)
         self.compress_thread = CompressionThread(
             float(self.edit_size.text()), self.checkbox_gpu.isChecked()
         )
@@ -238,12 +268,20 @@ class Window(QWidget):
         self.compress_thread.update_progress.connect(self.update_progress)
         self.compress_thread.start()
 
-    def abort_compression(self):
-        kill_ffmpeg()
-        self.completed(True)
+    def abort_or_clear(self):
+        if g.compressing:
+            kill_ffmpeg()
+            self.completed(True)
+        else:
+            g.queue = []
+            self.update_log(g.READY_TEXT)
+            self.button_compress.setEnabled(False)
+            self.button_compress.setStyleSheet(BUTTON_DISABLED_STYLE)
+            self.button_abort.setEnabled(False)
+            self.button_abort.setStyleSheet(BUTTON_DISABLED_STYLE)
 
     def update_log(self, text):
-        self.label_log.setText(text)
+        self.drag_drop_area.setText(text)
 
     def update_progress(self, progress_percentage):
         self.progress_bar.setValue(progress_percentage)
